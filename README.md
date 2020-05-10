@@ -1,2 +1,2 @@
 # scala_epfl_training
-scala_training
+This repository keeps track of scala exercises done while doing coursera's EPFL courses 
