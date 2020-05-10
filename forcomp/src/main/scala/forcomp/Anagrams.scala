@@ -188,7 +188,6 @@ object Anagrams extends AnagramsInterface {
 
     val sentenceCharOccurrences = sentenceOccurrences(sentence)
     val allOccurrencesSequences = computeValidOccurrences(sentenceCharOccurrences, List()).toList
-    println(allOccurrencesSequences)
 
     @scala.annotation.tailrec
     def toSentences(reversedOccurrencesSeq: List[Occurrences], partSentences: List[Sentence]): List[Sentence] = {
@@ -204,6 +203,122 @@ object Anagrams extends AnagramsInterface {
     allOccurrencesSequences.flatMap(occurrencesSeq => toSentences(occurrencesSeq.reverse, List(List())))
   }
 
+  // Bonus : uses dynamic programming instead of suggested solution
+  // This builds a a dynamic mapping to the solution avoiding recomputing solutions that have already been studied
+  // The solution adapts from problems issued from string edit distance algorithm and should be vastly superior
+  // to the previous one
+  type CharOccurrences = Map[Char, Int]
+
+  def toOccurrences(charOccurrences: CharOccurrences): Occurrences = charOccurrences.toList
+
+  lazy val dictionaryWithoutEmptyString: Map[CharOccurrences, Set[String]] = {
+    dictionary
+      .groupBy(word => convertToMap(wordOccurrences(word)))
+      .view.mapValues(_.toSet).toMap
+  } - Map.empty[Char, Int] // we remove the possibility of having an empty string
+
+  def isSubOccurrences(occurrences: CharOccurrences)(subOccurrences: CharOccurrences): Boolean =
+    subOccurrences forall { case (char, count) => occurrences.getOrElse(char, 0) >= count }
+
+  def addCharOccurrences(largerOccurrences: CharOccurrences, smallerOccurrences: CharOccurrences): CharOccurrences =
+    smallerOccurrences.foldLeft(largerOccurrences)(
+      (aggregate, charCount) => charCount match {
+      case (char, count) => aggregate + { char -> {count + aggregate.getOrElse(char, 0)} }
+    })
+
+  def subCharOccurrences(occurrences: CharOccurrences, occurrencesToSubtract: CharOccurrences): CharOccurrences = {
+    assert(isSubOccurrences(occurrences)(occurrencesToSubtract))
+    occurrencesToSubtract.foldLeft(occurrences)(
+      (aggregate, charCountPair) => {
+        val (char, charCount) = charCountPair
+        val aggregateCharCount = aggregate.getOrElse(char, 0)
+        if (charCount == aggregateCharCount)
+          aggregate - char
+        else // charCount < aggregateCharCount
+          aggregate + {
+            char -> {
+              aggregateCharCount - charCount
+            }
+          }
+      })
+  }
+
+  type ExplorationMap = Map[CharOccurrences, List[CharOccurrences]]
+
+  def findAnagrams(sentence: Sentence): List[Sentence] = { // findAnagrams
+    val targetCharOccurrences = convertToMap(sentenceOccurrences(sentence))
+    def isTargetSubOccurrences = isSubOccurrences( targetCharOccurrences )(_)
+
+    @scala.annotation.tailrec
+    def findAnagramsRec(occurrencesPath: ExplorationMap,
+                        dictionaryLeft: Map[CharOccurrences, Set[Word]],
+                        previouslyExploredOccurrences: Set[CharOccurrences]): ExplorationMap = {
+      if (previouslyExploredOccurrences.isEmpty) // if we have no more path to explore we give up
+        occurrencesPath // We have all the solutions
+      else {
+        val deltaOccurrences: List[(CharOccurrences, CharOccurrences, CharOccurrences)] =
+          previouslyExploredOccurrences.toList flatMap {
+            occurrences => {
+              for {
+                (wordOccurrences: CharOccurrences, _) <- dictionaryLeft
+                sumOccurrences = addCharOccurrences(occurrences, wordOccurrences)
+                if (isTargetSubOccurrences(sumOccurrences))
+              } yield (sumOccurrences, occurrences, wordOccurrences)
+            }
+          }
+        // find what we haven't explored yet
+        val newlyFoundOccurrences = deltaOccurrences.map(_._1).toSet.filterNot(occurrencesPath.contains)
+        // filter dictionary
+        val usedWordsCharCount = deltaOccurrences.map(_._3).toSet
+        val filteredDictionary = dictionaryLeft filter { case (charCount, _) => usedWordsCharCount.contains(charCount) }
+        //  add new path that we just found
+        val newOccurrencesPath = deltaOccurrences.foldLeft(occurrencesPath)((aggregate, delta) => {
+          val (nextOccurrences, previousOccurrences, _) = delta
+          val previousPredecessors = aggregate.getOrElse(nextOccurrences, List())
+          if (previousPredecessors.contains(previousOccurrences))
+            aggregate
+          else
+            aggregate + { nextOccurrences -> { previousOccurrences :: previousPredecessors } }
+        })
+        findAnagramsRec(newOccurrencesPath, filteredDictionary, newlyFoundOccurrences)
+      }
+    }
+
+    val initialCombination: CharOccurrences = Map.empty[Char, Int]
+    val occurrencesPath = findAnagramsRec(
+      Map(initialCombination -> List()),
+      dictionaryWithoutEmptyString filter { case (charCount, _) => isTargetSubOccurrences(charCount) },
+        Set(initialCombination)
+    )
+
+    def getOccurrencesPaths(occurrencesPointer: CharOccurrences): List[List[CharOccurrences]] = {
+      if (occurrencesPointer.isEmpty)
+        List(List())
+      else
+        occurrencesPath.get(occurrencesPointer) match {
+          case Some(allAncestors) =>
+            allAncestors flatMap {ancestor =>
+              val word = subCharOccurrences(occurrencesPointer, ancestor)
+              getOccurrencesPaths(ancestor).map(word :: _)
+            }
+        }
+    }
+
+    val paths = getOccurrencesPaths(targetCharOccurrences)
+
+    @scala.annotation.tailrec
+    def toSentences(reversedOccurrencesSeq: List[CharOccurrences], partSentences: List[Sentence]): List[Sentence] = {
+      if (reversedOccurrencesSeq.isEmpty)
+        partSentences
+      else {
+        val correspondingWords = dictionaryWithoutEmptyString.getOrElse(reversedOccurrencesSeq.head, List())
+        val newSentences = correspondingWords.flatMap(word => partSentences.map(word :: _)).toList
+        toSentences(reversedOccurrencesSeq.tail, newSentences)
+      }
+    }
+
+    paths .flatMap(charOccurrencesPath => toSentences(charOccurrencesPath, List(List())))
+  }
 }
 
 object Dictionary {
